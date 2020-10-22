@@ -6,7 +6,8 @@
 #  prod:  ./deploy.sh production
 #  stag:  ./deploy.sh staging
 ENV=${1:-dev}
-PROJECT=""
+APPNAME=""
+PROJECT=${APPNAME}-${ENV}
 BUCKET=${PROJECT}-lambda-deployment-artifacts
 PROFILE=default
 REGION=ap-southeast-1
@@ -26,4 +27,5 @@ sam deploy --profile "${PROFILE}" --region "${REGION}" \
   --stack-name "${PROJECT}" \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides \
-  Environment="$ENV"
+  Environment="${ENV}" \
+  Appname="${APPNAME}"
