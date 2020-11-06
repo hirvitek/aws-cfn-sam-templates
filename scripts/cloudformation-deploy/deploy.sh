@@ -8,25 +8,15 @@
 export ENV=${1:-dev}
 export APPNAME=""
 PROJECT=${APPNAME}-${ENV}
-BUCKET=${PROJECT}-lambda-deployment-artifacts
 PROFILE=default
 REGION=ap-southeast-1
-
-sam build
-
-aws --profile "${PROFILE}" --region "${REGION}" s3 mb s3://"${BUCKET}"
-
-sam package --profile "${PROFILE}" --region "${REGION}"  \
-  --template-file .aws-sam/build/template.yaml \
-  --output-template-file output.yaml \
-  --s3-bucket "${BUCKET}"
 
 # Source env variables for the template
 . env."${ENV}".sh
 
 ## the actual deployment step
 sam deploy --profile "${PROFILE}" --region "${REGION}" \
-  --template-file output.yaml \
+  --template-file template.yaml \
   --stack-name "${PROJECT}" \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides \
@@ -34,3 +24,4 @@ sam deploy --profile "${PROFILE}" --region "${REGION}" \
   Appname="${APPNAME}" \
   VPC="${VPC_ID}" \
   PublicSubnet1Id="${PUBLIC_SUBNET_1}"
+
