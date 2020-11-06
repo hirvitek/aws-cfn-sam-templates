@@ -1,0 +1,409 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "EC2 instance with docker installed"
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues:
+      - prod
+      - stag
+      - dev
+    ConstraintDescription: Environment is not valid
+  Appname:
+    Type: String
+  CodeDeployBucketArn:
+    Type: String
+  ImageId:
+    Type: String
+    Default: ami-015a6758451df3cb9
+  VPC:
+    Type: AWS::SSM::Parameter::Value<String>
+  PublicSubnet1Id:
+    Type: AWS::SSM::Parameter::Value<String>
+  PublicSubnet2Id:
+    Type: AWS::SSM::Parameter::Value<String>
+  TargetGroupId:
+    Type: AWS::SSM::Parameter::Value<String>
+
+Mappings:
+  Variables:
+    prod:
+      ASGMinSize: 1
+      AGSMaxSize: 4
+      InstanceType: t3.medium
+    dev:
+      ASGMinSize: 1
+      AGSMaxSize: 2
+      InstanceType: t2.micro
+
+Conditions:
+  isProduction: !Equals [!Ref Environment, production]
+
+Resources:
+  AutoscalingGroup:
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MaxBatchSize: !If [isProduction, 4, 1]
+        MinInstancesInService: 1
+        WaitOnResourceSignals: false
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AvailabilityZones:
+        - !Select [0, !GetAZs ""]
+        - !Select [1, !GetAZs ""]
+      LaunchConfigurationName: !Ref LaunchConfig
+      MaxSize: !FindInMap [Variables, !Ref Environment, AGSMaxSize]
+      MinSize: !FindInMap [Variables, !Ref Environment, ASGMinSize]
+      NotificationConfiguration:
+        TopicARN:
+          Ref: ASGNotification
+        NotificationTypes:
+          - autoscaling:EC2_INSTANCE_LAUNCH
+          - autoscaling:EC2_INSTANCE_LAUNCH_ERROR
+          - autoscaling:EC2_INSTANCE_TERMINATE
+          - autoscaling:EC2_INSTANCE_TERMINATE_ERROR
+      TargetGroupARNs:
+        - !Ref TargetGroupId
+      VPCZoneIdentifier:
+        - !Ref PublicSubnet1Id
+        - !Ref PublicSubnet2Id
+      Tags:
+        - Key: app
+          Value: !Ref Appname
+          PropagateAtLaunch: true
+        - Key: type
+          Value: compute
+          PropagateAtLaunch: true
+        - Key: env
+          Value: !Ref Environment
+          PropagateAtLaunch: true
+
+  ScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName:
+        Ref: AutoscalingGroup
+      Cooldown: "60"
+      ScalingAdjustment: "1"
+
+  ScaleDownPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName:
+        Ref: AutoscalingGroup
+      Cooldown: "60"
+      ScalingAdjustment: "-1"
+
+  CPUAlarmHigh:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Scale-up if CPU > 80% for 1 minute
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: "60"
+      EvaluationPeriods: "2"
+      Threshold: "80"
+      AlarmActions:
+        - Ref: ScaleUpPolicy
+        - Ref: AlarmsTopic
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value:
+            Ref: AutoscalingGroup
+      ComparisonOperator: GreaterThanThreshold
+
+  CPUAlarmLow:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Scale-down if CPU < 60% for 1 minute
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: "60"
+      EvaluationPeriods: "2"
+      Threshold: "60"
+      AlarmActions:
+        - Ref: ScaleDownPolicy
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value:
+            Ref: AutoscalingGroup
+      ComparisonOperator: LessThanThreshold
+
+  LaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Metadata:
+      'AWS::CloudFormation::Init':
+        config:
+          packages:
+            yum:
+              amazon-ssm-agent: [ ]
+            rpm:
+              cloudwatch: 'https://s3.amazonaws.com/amazoncloudwatch-agent/amazon_linux/amd64/latest/amazon-cloudwatch-agent.rpm'
+          files:
+            '/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json':
+              content: !Sub |
+                {
+                  "logs": {
+                    "logs_collected": {
+                      "files": {
+                        "collect_list": [{
+                           "log_group_name": "${Logs}",
+                           "file_path": "/var/log/amazon/amazon-cloudwatch-agent/amazon-cloudwatch-agent.log",
+                           "log_stream_name": "{instance_id}/var/log/amazon/amazon-cloudwatch-agent/amazon-cloudwatch-agent.log",
+                           "timestamp_format": "%Y-%m-%dT%H:%M:%S"
+                        }, {
+                            "log_group_name": "${Logs}",
+                            "file_path": "/var/log/amazon/amazon-cloudwatch-agent/configuration-validation.log",
+                            "log_stream_name": "{instance_id}/var/log/amazon/amazon-cloudwatch-agent/configuration-validation.log",
+                            "timestamp_format": "%Y/%m/%d %H:%M:%S"
+                        }, {
+                          "log_group_name": "${Logs}",
+                          "file_path": "/var/log/amazon/ssm/amazon-ssm-agent.log",
+                          "log_stream_name": "{instance_id}/var/log/amazon/ssm/amazon-ssm-agent.log",
+                          "timestamp_format": "%Y-%m-%d %H:%M:%S"
+                        }, {
+                           "log_group_name": "${Logs}",
+                           "file_path": "/var/log/amazon/ssm/errors.log",
+                           "log_stream_name": "{instance_id}/var/log/amazon/ssm/errors.log",
+                           "timestamp_format": "%Y-%m-%d %H:%M:%S"
+                        }, {
+                           "log_group_name": "${Logs}",
+                           "file_path": "/var/log/boot.log",
+                           "log_stream_name": "{instance_id}/var/log/boot.log"
+                        }, {
+                           "log_group_name": "${Logs}",
+                           "file_path": "/var/log/cfn-hup.log",
+                           "log_stream_name": "{instance_id}/var/log/cfn-hup.log",
+                           "timestamp_format": "%Y-%m-%d %H:%M:%S"
+                        }, {
+                           "log_group_name": "${Logs}",
+                           "file_path": "/var/log/cfn-init-cmd.log",
+                           "log_stream_name": "{instance_id}/var/log/cfn-init-cmd.log",
+                           "timestamp_format": "%Y-%m-%d %H:%M:%S"
+                        }, {
+                           "log_group_name": "${Logs}",
+                           "file_path": "/var/log/cfn-init.log",
+                           "log_stream_name": "{instance_id}/var/log/cfn-init.log",
+                           "timestamp_format": "%Y-%m-%d %H:%M:%S"
+                        }, {
+                           "log_group_name": "${Logs}",
+                           "file_path": "/var/log/cfn-wire.log",
+                           "log_stream_name": "{instance_id}/var/log/cfn-wire.log",
+                           "timestamp_format": "%Y-%m-%d %H:%M:%S"
+                        }, {
+                           "log_group_name": "${Logs}",
+                           "file_path": "/var/log/cloud-init-output.log",
+                           "log_stream_name": "{instance_id}/var/log/cloud-init-output.log"
+                        }, {
+                           "log_group_name": "${Logs}",
+                           "file_path": "/var/log/cloud-init.log",
+                           "log_stream_name": "{instance_id}/var/log/cloud-init.log",
+                           "timestamp_format": "%b %d %H:%M:%S"
+                        }, {
+                           "log_group_name": "${Logs}",
+                           "file_path": "/var/log/grubby_prune_debug",
+                           "log_stream_name": "{instance_id}/var/log/grubby_prune_debug"
+                        }, {
+                           "log_group_name": "${Logs}",
+                           "file_path": "/var/log/secure",
+                           "log_stream_name": "{instance_id}/var/log/secure",
+                           "timestamp_format": "%b %-d %H:%M:%S"
+                        }]
+                      }
+                    }
+                  },
+                  "metrics": {
+                    "namespace": "${AWS::StackName}",
+                    "append_dimensions": {
+                      "InstanceId": "${!aws:InstanceId}"
+                    },
+                    "metrics_collected": {
+                      "mem": {
+                        "measurement": [
+                          "mem_used_percent"
+                        ]
+                      },
+                      "swap": {
+                        "measurement": [
+                          "swap_used_percent"
+                        ]
+                      },
+                      "disk": {
+                        "resources": [
+                          "/"
+                        ],
+                        "measurement": [
+                          "used_percent"
+                        ],
+                        "drop_device": true
+                      }
+                    }
+                  }
+                }
+              mode: '000644'
+              owner: root
+              group: root
+            '/etc/cfn/cfn-hup.conf':
+              content: !Sub |
+                [main]
+                stack=${AWS::StackId}
+                region=${AWS::Region}
+                interval=1
+              mode: '000400'
+              owner: root
+              group: root
+            '/etc/cfn/hooks.d/cfn-auto-reloader.conf':
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update
+                path=Resources.EC2ListenerInstance.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init --verbose --stack=${AWS::StackName} --region=${AWS::Region} --resource=EC2ListenerInstance
+                runas=root
+          services:
+            sysvinit:
+              amazon-ssm-agent:
+                enabled: true
+                ensureRunning: true
+              amazon-cloudwatch-agent:
+                enabled: true
+                ensureRunning: true
+                files:
+                  - '/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json'
+                packages:
+                  - cloudwatch
+              cfn-hup:
+                enabled: true
+                ensureRunning: true
+                files:
+                  - '/etc/cfn/cfn-hup.conf'
+                  - '/etc/cfn/hooks.d/cfn-auto-reloader.conf'
+    Properties:
+      IamInstanceProfile: !Ref IAMInstanceProfile
+      ImageId: !Ref ImageId
+      InstanceType: !FindInMap [Variables, !Ref Environment, InstanceType]
+      SecurityGroups:
+        - Fn::ImportValue: !Sub ${Appname}-${Environment}-ec2-scgroupId
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource EC2ListenerInstance --region ${AWS::Region}
+          # rest of the script...
+
+  IAMInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub ${Appname}-${Environment}-instanceprofile
+      Path: "/"
+      Roles:
+        - !Ref EC2Role
+
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+
+  Ec2Policy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${Appname}-${Environment}-ec2-policy
+      Roles:
+        - Ref: EC2Role
+      PolicyDocument:
+        Statement:
+          - Sid: S3Read
+            Effect: Allow
+            Action:
+              - s3:Get*
+              - s3:List*
+            Resource:
+              - !Ref CodeDeployBucketArn
+              - !Sub ${CodeDeployBucketArn}/*
+              - !Sub arn:aws:s3:${AWS::Region}:${AWS::AccountId}:accesspoint/*
+          - Sid: metrics
+            Effect: Allow
+            Action: 'cloudwatch:PutMetricData'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'cloudwatch:namespace': !Ref 'AWS::StackName'
+          - Sid: logs
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:DescribeLogStreams
+              - logs:DescribeLogGroups
+            Resource: !GetAtt Logs.Arn
+
+  Logs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 14
+
+  ASGNotification:
+    Type: AWS::SNS::Topic
+
+  MemoryTooHighAlarm:
+    Condition: isProduction
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: 'Average memory utilization over last 10 minutes higher than 80%'
+      Namespace: !Ref 'AWS::StackName'
+      MetricName: mem_used_percent
+      Statistic: Average
+      Period: 600
+      EvaluationPeriods: 1
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: 80
+      AlarmActions:
+        - !Ref AlarmsTopic
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value:
+            Ref: AutoscalingGroup
+
+  DiskTooHighAlarm:
+    Condition: isProduction
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: 'Average disk utilization over last 10 minutes higher than 80%'
+      Namespace: !Ref 'AWS::StackName'
+      MetricName: disk_used_percent
+      Statistic: Average
+      Period: 600
+      EvaluationPeriods: 1
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: 80
+      AlarmActions:
+        - !Ref AlarmsTopic
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value:
+            Ref: AutoscalingGroup
+        - Name: fstype
+          Value: xfs
+        - Name: path
+          Value: '/'
+
+  AlarmsTopic:
+    Type: AWS::SNS::Topic
+    Condition: isProduction
+    Properties:
+      Subscription:
+        - Protocol: email
+          Endpoint: matteo.gioioso@global-fashion-group.com
