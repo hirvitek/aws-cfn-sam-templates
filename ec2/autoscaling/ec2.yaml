@@ -403,7 +403,3 @@ Resources:
   AlarmsTopic:
     Type: AWS::SNS::Topic
     Condition: isProduction
-    Properties:
-      Subscription:
-        - Protocol: email
-          Endpoint: matteo.gioioso@global-fashion-group.com
