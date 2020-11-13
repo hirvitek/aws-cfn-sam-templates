@@ -11,13 +11,14 @@ PROJECT=${APPNAME}-${ENV}
 BUCKET=${PROJECT}-lambda-deployment-artifacts
 PROFILE=default
 REGION=ap-southeast-1
+TEMPLATE_NAME=template
 
 sam build
 
 aws --profile "${PROFILE}" --region "${REGION}" s3 mb s3://"${BUCKET}"
 
 sam package --profile "${PROFILE}" --region "${REGION}"  \
-  --template-file .aws-sam/build/template.yaml \
+  --template-file .aws-sam/build/${TEMPLATE_NAME}.yaml \
   --output-template-file output.yaml \
   --s3-bucket "${BUCKET}"
 
