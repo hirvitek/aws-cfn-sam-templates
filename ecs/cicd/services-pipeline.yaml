@@ -1,0 +1,310 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues:
+      - prod
+      - stag
+      - dev
+    ConstraintDescription: Environment is not valid
+
+  Appname:
+    Type: String
+
+  GitHubOwner:
+    Type: String
+
+  GitHubRepo:
+    Type: String
+
+  GitHubRepoUrl:
+    Type: String
+
+  GitHubBranch:
+    Type: String
+    Default: master
+
+Resources:
+
+  DeploymentArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${Appname}-${Environment}-deployment-artifacts
+
+  ECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      Tags:
+        - Key: app
+          Value: !Ref Appname
+        - Key: env
+          Value: !Ref Environment
+        - Key: type
+          Value: storage
+      RepositoryName: !Sub ${Appname}-${Environment}
+      RepositoryPolicyText:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowPushPull
+            Effect: Allow
+            Principal: "*"
+            Action:
+              - "ecr:GetDownloadUrlForLayer"
+              - "ecr:BatchGetImage"
+              - "ecr:BatchCheckLayerAvailability"
+              - "ecr:PutImage"
+              - "ecr:InitiateLayerUpload"
+              - "ecr:UploadLayerPart"
+              - "ecr:CompleteLayerUpload"
+              - "ecr:GetAuthorizationToken"
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub ${Appname}-${Environment}-pipeline
+      RoleArn: !GetAtt CodePipelineRole.Arn
+      ArtifactStore:
+        Location: !Ref DeploymentArtifactsBucket
+        Type: S3
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              InputArtifacts: []
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Version: "1"
+                Provider: GitHub
+              OutputArtifacts:
+                - Name: SourceCode
+              Configuration:
+                Owner: !Ref GitHubOwner
+                Repo: !Ref GitHubRepo
+                Branch: !Ref GitHubBranch
+                PollForSourceChanges: false
+                OAuthToken: !Sub '{{resolve:secretsmanager:${Appname}-${Environment}-github:SecretString:token}}'
+              RunOrder: 1
+        - Name: Build
+          Actions:
+            - Name: CodeBuild
+              InputArtifacts:
+                - Name: SourceCode
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: "1"
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref BuildProject
+              RunOrder: 1
+
+
+  # BUILD PROJECT ==================================
+
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${Appname}-${Environment}-build
+      Description: Build phase of the pipeline
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:4.0
+        PrivilegedMode: true # To be able to run the docker daemon
+        EnvironmentVariables:
+          - Name: TEMPLATE_BUCKET
+            Value: !Ref DeploymentArtifactsBucket
+          - Name: TEMPLATE_PREFIX
+            Value: codebuild
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: ECR_REPOSITORY_URI
+            Value: !Join [ ".", [ !Ref "AWS::AccountId", "dkr.ecr", !Ref "AWS::Region", !Join [ "/", [ "amazonaws.com", !Ref "ECRRepository" ] ] ] ]
+      Source:
+        Location: !Ref GitHubRepoUrl
+        Type: GITHUB
+      TimeoutInMinutes: 15
+      Tags:
+        - Key: app
+          Value: !Ref Appname
+        - Key: env
+          Value: !Ref Environment
+        - Key: type
+          Value: ops
+        - Key: description
+          Value: Code build project
+
+  GithubWebhook:
+    Type: AWS::CodePipeline::Webhook
+    Properties:
+      Authentication: GITHUB_HMAC
+      AuthenticationConfiguration:
+        SecretToken: !Sub '{{resolve:secretsmanager:${Appname}-${Environment}-github:SecretString:token}}'
+      RegisterWithThirdParty: true
+      Filters:
+        - JsonPath: "$.ref"
+          MatchEquals: refs/heads/master
+      TargetPipeline: !Ref Pipeline
+      TargetAction: Source
+      TargetPipelineVersion: !GetAtt Pipeline.Version
+
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${Appname}-${Environment}-image-build-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "codebuild.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: /service-role/
+      Policies:
+        - PolicyName: !Sub ${Appname}-${Environment}-image-build-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: "ECR"
+                Effect: "Allow"
+                Action:
+                  - "ecr:GetDownloadUrlForLayer"
+                  - "ecr:BatchGetImage"
+                  - "ecr:BatchCheckLayerAvailability"
+                  - "ecr:PutImage"
+                  - "ecr:InitiateLayerUpload"
+                  - "ecr:UploadLayerPart"
+                  - "ecr:CompleteLayerUpload"
+                  - "ecr:GetAuthorizationToken"
+                Resource:
+                  - "*"
+              - Effect: "Allow"
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource:
+                  - Fn::Sub: arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*
+              - Effect: "Allow"
+                Sid: S3
+                Action:
+                  - "s3:PutObject"
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+                  - "s3:ListBucket"
+                Resource:
+                  - Fn::Sub: arn:aws:s3:::${DeploymentArtifactsBucket}/*
+                  - Fn::Sub: arn:aws:s3:::${DeploymentArtifactsBucket}
+
+
+#  CodeBuildLogs:
+#    Type: AWS::Logs::LogGroup
+#    Properties:
+#      RetentionInDays: 7
+
+  # DEPLOY PROJECT ==================================
+
+#  Application:
+#    Type: AWS::CodeDeploy::Application
+#    Properties:
+#      ComputePlatform: ECS
+#
+#  DeploymentConfig:
+#    Type: AWS::CodeDeploy::DeploymentConfig
+#    Properties:
+#      MinimumHealthyHosts:
+#        Type: FLEET_PERCENT
+#        Value: '75'
+#
+#  DeploymentGroup:
+#    Type: AWS::CodeDeploy::DeploymentGroup
+#    Properties:
+#      ApplicationName:
+#        Ref: Application
+#      DeploymentStyle:
+#        DeploymentType: BLUE_GREEN
+#      Deployment:
+#        Description: Initial deployment
+#        IgnoreApplicationStopFailures: 'true'
+#        Revision:
+#          RevisionType: S3
+#          S3Location:
+#            Bucket:
+#              Ref: DeploymentArtifactsBucket
+#            Key:
+#              Ref: S3Key
+#            BundleType: Zip
+#      ServiceRoleArn:
+#        Fn::GetAtt:
+#          - CodeDeployServiceIAMRole
+#          - Arn
+#
+#
+  CodePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName:
+        Fn::Sub: CodePipelineRole-${AWS::StackName}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "codepipeline.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: /
+      Policies:
+        - PolicyName: "CodePipelineNestedCFNAccessPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "s3:DeleteObject"
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+                  - "s3:ListBucket"
+                  - "s3:PutObject"
+                  - "s3:GetBucketPolicy"
+                Resource:
+                  - Fn::Sub: arn:aws:s3:::${DeploymentArtifactsBucket}
+                  - Fn::Sub: arn:aws:s3:::${DeploymentArtifactsBucket}/*
+              - Effect: "Allow"
+                Action:
+                  - "codebuild:StartBuild"
+                  - "codebuild:BatchGetBuilds"
+                Resource:
+                  - Fn::Sub: arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/${BuildProject}
+                  - Fn::Sub: arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:build/${BuildProject}:*
+              - Effect: "Allow"
+                Action:
+                  - "iam:PassRole"
+                Resource:
+                  - "*"
+
+  # You MUST add all the permission needed to deploy your template
+
+#  CodeDeployServiceIAMRole:
+#    Type: AWS::IAM::Role
+#    Properties:
+#      AssumeRolePolicyDocument:
+#        Version: '2012-10-17'
+#        Statement:
+#          - Sid: CodeDeployTrustPolicy
+#            Effect: Allow
+#            Principal:
+#              Service:
+#                - codedeploy.amazonaws.com
+#            Action: sts:AssumeRole
+#      Path: "/"
+#      ManagedPolicyArns:
+#        - arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole

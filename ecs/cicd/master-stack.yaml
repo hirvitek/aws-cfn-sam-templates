@@ -1,0 +1,77 @@
+Description: >
+  This template illustrates reference architecture for Blue/Green Deployment on ECS. For further reference, please review BluegreenRepo ==> https://github.com/awslabs/ecs-blue-green-deployment
+
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues:
+      - prod
+      - stag
+      - dev
+    ConstraintDescription: Environment is not valid
+
+  Appname:
+    Type: String
+
+  TemplateBucket:
+    Type: String
+    Description: >
+      S3 Bucket used for nested templates
+
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterLabels:
+      GitHubUser:
+        default: "User"
+      GitHubRepo:
+        default: "Repo"
+      GitHubBranch:
+        default: "Branch"
+      GitHubToken:
+        default: "Personal Access Token"
+    ParameterGroups:
+      - Label:
+          default: GitHub Configuration
+        Parameters:
+          - GitHubRepo
+          - GitHubBranch
+          - GitHubUser
+          - GitHubToken
+
+
+Resources:
+  DeploymentPipeline:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.amazonaws.com/${TemplateBucket}/templates/deployment-pipeline.yaml
+      Parameters:
+        GitHubUser: !Ref GitHubUser
+        GitHubToken: !Ref GitHubToken
+        GitHubRepo: !Ref GitHubRepo
+        GitHubBranch: !Ref GitHubBranch
+        TemplateBucket: !Ref TemplateBucket
+        Subnet1: !GetAtt VPC.Outputs.Subnet1
+        Subnet2: !GetAtt VPC.Outputs.Subnet2
+        VpcId: !GetAtt VPC.Outputs.VpcId
+        VpcCIDR: 10.215.0.0/16
+
+
+
+ # PARAMETERS =============================================
+
+  # Token should be in form '{"token":"123abc"}'
+  GithhubSecrets:
+    Type: 'AWS::SecretsManager::Secret'
+    Properties:
+      Name: !Sub ${Appname}-${Environment}-github
+      Description: Contain mainly a GithubToken for CodePipeline
+      Tags:
+        - Key: app
+          Value: !Ref Appname
+        - Key: env
+          Value: !Ref Environment
+        - Key: type
+          Value: security
+
