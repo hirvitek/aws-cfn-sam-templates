@@ -17,6 +17,9 @@ Parameters:
   Appname:
     Type: String
 
+  AlarmsTopicArn:
+    Type: AWS::SSM::Parameter::Value<String>
+
   ECSAMI:
     Description: ECS-Optimized AMI ID
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
@@ -198,15 +201,6 @@ Resources:
         - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
         - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
       Policies:
-        - PolicyName: sns
-          PolicyDocument: |
-            {
-                "Statement": [{
-                    "Effect": "Allow",
-                    "Action": "sns:Publish",
-                    "Resource": "*"
-                }]
-            }
         - PolicyName: ecs-service
           PolicyDocument: |
             {
@@ -415,8 +409,6 @@ Resources:
       Value: !Ref ECSAutoScalingGroup
 
   # METRICS and ALARMS ==========================
-  ECSClusterAlarmsTopic:
-    Type: AWS::SNS::Topic
 
   ECSAutoScalingGroupMaxInstancesAlarm:
     Condition: IsProduction
@@ -424,7 +416,7 @@ Resources:
     Properties:
       ActionsEnabled: true
       AlarmActions:
-        - !Ref ECSClusterAlarmsTopic
+        - !Ref AlarmsTopicArn
       AlarmDescription: Max instances
       ComparisonOperator: GreaterThanOrEqualToThreshold
       Dimensions:
@@ -451,7 +443,7 @@ Resources:
       ComparisonOperator: GreaterThanThreshold
       Threshold: 90
       AlarmActions:
-        - !Ref ECSClusterAlarmsTopic
+        - !Ref AlarmsTopicArn
       Dimensions:
         - Name: AutoScalingGroupName
           Value: !Ref ECSAutoScalingGroup
@@ -472,7 +464,7 @@ Resources:
       EvaluationPeriods: 1
       Threshold: 80
       AlarmActions:
-        - !Ref ECSClusterAlarmsTopic
+        - !Ref AlarmsTopicArn
 
 Outputs:
   Cluster:

@@ -1,0 +1,168 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues:
+      - prod
+      - stag
+      - dev
+    ConstraintDescription: Environment is not valid
+
+  Appname:
+    Type: String
+
+  ServiceName:
+    Type: String
+
+  ImageURI:
+    Type: String
+
+  ECSClusterArn:
+    Type: AWS::SSM::Parameter::Value<String>
+
+  LoadBalancerArn:
+    Type: AWS::SSM::Parameter::Value<String>
+
+  VPC:
+    Type: AWS::SSM::Parameter::Value<String>
+
+  AlarmsTopicArn:
+    Type: AWS::SSM::Parameter::Value<String>
+
+  ContainerPort:
+    Type: String
+    Default: 80
+
+  CertificateArn:
+    Type: String
+    Default: ""
+
+Conditions:
+  isProduction: !Equals [!Ref Environment, production]
+
+Resources:
+
+  ServiceTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      TargetType: instance
+      VpcId: !Ref VPC
+      HealthCheckEnabled: true
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: /
+      HealthCheckPort: !Ref ContainerPort
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 3
+      UnhealthyThresholdCount: 5
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          # To speed up the deployment in development we keep the delay at 0
+          Value: !If [isProduction, '300', '0']
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ServiceTargetGroup
+      LoadBalancerArn: !Ref LoadBalancerArn
+      Certificates:
+        - CertificateArn:
+            Fn::If:
+              - isProduction
+              - Ref: CertificateArn
+              - Ref: AWS::NoValue
+      Port: !If [isProduction, 443, 80]
+      Protocol: !If [isProduction, HTTPS, HTTP]
+
+  ECSService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub ${ServiceName}-${Environment}
+      Cluster: !Ref ECSClusterArn
+      TaskDefinition: !Ref TaskDefinition
+      PlacementStrategies:
+        - Field: memory
+          Value: binpack
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+      DesiredCount: 2
+      LaunchType: EC2
+      LoadBalancers:
+        - ContainerName: !Sub ${ServiceName}-${Environment}
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref ServiceTargetGroup
+      Tags:
+        - Key: app
+          Value: !Ref Appname
+        - Key: service
+          Value: !Sub ${ServiceName}-${Environment}
+        - Key: type
+          Value: compute
+        - Key: env
+          Value: !Ref Environment
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Memory: 512
+      NetworkMode: bridge
+      RequiresCompatibilities:
+        - 'EC2'
+      ContainerDefinitions:
+        - Name: !Sub ${ServiceName}-${Environment}
+          Image: !Ref ImageURI
+          # Dynamic Port Mapping
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              Protocol: tcp
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              'awslogs-region': !Ref 'AWS::Region'
+              'awslogs-group': !Ref LogGroup
+              'awslogs-stream-prefix': !Sub ${ServiceName}-${Environment}
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: !If [isProduction, 30, 7]
+
+  CPUUtilizationTooHighAlarm:
+    Condition: isProduction
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmDescription: 'Average CPU utilization over last 10 minutes higher than 80%'
+      Namespace: 'AWS/ECS'
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref ECSClusterArn
+        - Name: ServiceName
+          Value: !GetAtt ECSService.Name
+      MetricName: CPUUtilization
+      ComparisonOperator: GreaterThanThreshold
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 80
+      AlarmActions:
+        - !Ref AlarmsTopicArn
+
+  # PARAMETERS =======================
+
+  TargetGroupArn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${Appname}-${ServiceName}-${Environment}-targetGroup-arn
+      Tags:
+        app: !Ref Appname
+        env: !Ref Environment
+        type: parameter
+        description: Target group Arn
+      Type: String
+      Value: !Ref ServiceTargetGroup

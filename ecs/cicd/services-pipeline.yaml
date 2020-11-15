@@ -12,6 +12,21 @@ Parameters:
   Appname:
     Type: String
 
+  ServiceName:
+    Type: String
+
+  ECSClusterArn:
+    Type: AWS::SSM::Parameter::Value<String>
+
+  LoadBalancerArn:
+    Type: AWS::SSM::Parameter::Value<String>
+
+  VPC:
+    Type: AWS::SSM::Parameter::Value<String>
+
+  AlarmsTopicArn:
+    Type: AWS::SSM::Parameter::Value<String>
+
   GitHubOwner:
     Type: String
 
@@ -30,7 +45,7 @@ Resources:
   DeploymentArtifactsBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub ${Appname}-${Environment}-deployment-artifacts
+      BucketName: !Sub ${AWS::StackName}-deployment-artifacts
 
   ECRRepository:
     Type: AWS::ECR::Repository
@@ -38,11 +53,13 @@ Resources:
       Tags:
         - Key: app
           Value: !Ref Appname
+        - Key: service
+          Value: !Ref ServiceName
         - Key: env
           Value: !Ref Environment
         - Key: type
           Value: storage
-      RepositoryName: !Sub ${Appname}-${Environment}
+      RepositoryName: !Sub ${AWS::StackName}
       RepositoryPolicyText:
         Version: "2012-10-17"
         Statement:
@@ -62,7 +79,7 @@ Resources:
   Pipeline:
     Type: AWS::CodePipeline::Pipeline
     Properties:
-      Name: !Sub ${Appname}-${Environment}-pipeline
+      Name: !Sub ${AWS::StackName}-pipeline
       RoleArn: !GetAtt CodePipelineRole.Arn
       ArtifactStore:
         Location: !Ref DeploymentArtifactsBucket
@@ -91,6 +108,8 @@ Resources:
             - Name: CodeBuild
               InputArtifacts:
                 - Name: SourceCode
+              OutputArtifacts:
+                - Name: build-output-artifacts
               ActionTypeId:
                 Category: Build
                 Owner: AWS
@@ -99,6 +118,35 @@ Resources:
               Configuration:
                 ProjectName: !Ref BuildProject
               RunOrder: 1
+        - Name: Deploy
+          Actions:
+            - Name: Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: CloudFormation
+              InputArtifacts:
+                - Name: SourceCode
+                - Name: build-output-artifacts
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                Capabilities: CAPABILITY_NAMED_IAM
+                ParameterOverrides: !Sub |
+                  {
+                    "Appname": "${Appname}",
+                    "ServiceName": "${ServiceName}",
+                    "ECSClusterArn": "${ECSClusterArn}",
+                    "LoadBalancerArn": "${LoadBalancerArn}",
+                    "VPC": "${VPC}",
+                    "AlarmsTopicArn": "${AlarmsTopicArn}",
+                    "ImageURI" : { "Fn::GetParam" : ["build-output-artifacts", "build.json", "Image"] },
+                    "Environment":  "${Environment}"
+                  }
+                RoleArn: !GetAtt CloudformationExecutionRole.Arn
+                StackName: !Sub ${AWS::StackName}-service
+                TemplatePath: source-output-artifacts::Cloudformation/service.yml
+              RunOrder: 1
 
 
   # BUILD PROJECT ==================================
@@ -106,7 +154,7 @@ Resources:
   BuildProject:
     Type: AWS::CodeBuild::Project
     Properties:
-      Name: !Sub ${Appname}-${Environment}-build
+      Name: !Sub ${AWS::StackName}-build
       Description: Build phase of the pipeline
       ServiceRole: !GetAtt CodeBuildRole.Arn
       Artifacts:
@@ -132,6 +180,8 @@ Resources:
       Tags:
         - Key: app
           Value: !Ref Appname
+        - Key: service
+          Value: !Ref ServiceName
         - Key: env
           Value: !Ref Environment
         - Key: type
@@ -156,7 +206,7 @@ Resources:
   CodeBuildRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub ${Appname}-${Environment}-image-build-role
+      RoleName: !Sub ${AWS::StackName}-image-build-role
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -168,7 +218,7 @@ Resources:
               - "sts:AssumeRole"
       Path: /service-role/
       Policies:
-        - PolicyName: !Sub ${Appname}-${Environment}-image-build-policy
+        - PolicyName: !Sub ${AWS::StackName}-image-build-policy
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
@@ -203,55 +253,11 @@ Resources:
                   - Fn::Sub: arn:aws:s3:::${DeploymentArtifactsBucket}/*
                   - Fn::Sub: arn:aws:s3:::${DeploymentArtifactsBucket}
 
-
-#  CodeBuildLogs:
-#    Type: AWS::Logs::LogGroup
-#    Properties:
-#      RetentionInDays: 7
-
-  # DEPLOY PROJECT ==================================
-
-#  Application:
-#    Type: AWS::CodeDeploy::Application
-#    Properties:
-#      ComputePlatform: ECS
-#
-#  DeploymentConfig:
-#    Type: AWS::CodeDeploy::DeploymentConfig
-#    Properties:
-#      MinimumHealthyHosts:
-#        Type: FLEET_PERCENT
-#        Value: '75'
-#
-#  DeploymentGroup:
-#    Type: AWS::CodeDeploy::DeploymentGroup
-#    Properties:
-#      ApplicationName:
-#        Ref: Application
-#      DeploymentStyle:
-#        DeploymentType: BLUE_GREEN
-#      Deployment:
-#        Description: Initial deployment
-#        IgnoreApplicationStopFailures: 'true'
-#        Revision:
-#          RevisionType: S3
-#          S3Location:
-#            Bucket:
-#              Ref: DeploymentArtifactsBucket
-#            Key:
-#              Ref: S3Key
-#            BundleType: Zip
-#      ServiceRoleArn:
-#        Fn::GetAtt:
-#          - CodeDeployServiceIAMRole
-#          - Arn
-#
-#
   CodePipelineRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName:
-        Fn::Sub: CodePipelineRole-${AWS::StackName}
+        Fn::Sub: ${AWS::StackName}-image-pipeline-role
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -291,20 +297,25 @@ Resources:
                 Resource:
                   - "*"
 
-  # You MUST add all the permission needed to deploy your template
+# DEPLOY PROJECT ==================================
 
-#  CodeDeployServiceIAMRole:
-#    Type: AWS::IAM::Role
-#    Properties:
-#      AssumeRolePolicyDocument:
-#        Version: '2012-10-17'
-#        Statement:
-#          - Sid: CodeDeployTrustPolicy
-#            Effect: Allow
-#            Principal:
-#              Service:
-#                - codedeploy.amazonaws.com
-#            Action: sts:AssumeRole
-#      Path: "/"
-#      ManagedPolicyArns:
-#        - arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole
+  CloudformationExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-image-pipeline-role
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: "DeployToECS"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "ecs:*"
+                Resource:
+                  - !Ref ECSClusterArn

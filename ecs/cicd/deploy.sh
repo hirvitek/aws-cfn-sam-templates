@@ -6,8 +6,9 @@
 #  prod:  ./deploy.sh production
 #  stag:  ./deploy.sh staging
 export ENV=${1:-dev}
-export APPNAME=ecs-test-pipeline
-PROJECT=${APPNAME}-${ENV}
+export APPNAME=ecs-test
+export SERVICE_NAME=web
+PROJECT=${APPNAME}-${SERVICE_NAME}-${ENV}-pipeline
 PROFILE=default
 REGION=us-west-2
 TEMPLATE_NAME=services-pipeline
@@ -20,8 +21,9 @@ sam deploy --profile "${PROFILE}" --region "${REGION}" \
   --stack-name "${PROJECT}" \
   --capabilities CAPABILITY_NAMED_IAM \
   --parameter-overrides \
-  Environment="${ENV}" \
   Appname="${APPNAME}" \
+  ServiceName=${SERVICE_NAME} \
+  Environment="${ENV}" \
   GitHubOwner=MatteoInfi \
   GitHubRepoUrl=https://github.com/MatteoInfi/web-service-test.git \
   GitHubRepo=web-service-test

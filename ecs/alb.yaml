@@ -1,0 +1,190 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Application load balancer for ECS cluster
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues:
+      - prod
+      - stag
+      - dev
+    ConstraintDescription: Environment is not valid
+
+  Appname:
+    Type: String
+
+  ServiceName:
+    Type: String
+
+  VPC:
+    Type: AWS::SSM::Parameter::Value<String>
+
+  PublicSubnet1:
+    Type: AWS::SSM::Parameter::Value<String>
+
+  PublicSubnet2:
+    Type: AWS::SSM::Parameter::Value<String>
+
+  AlarmsTopicArn:
+    Type: AWS::SSM::Parameter::Value<String>
+
+Conditions:
+  isProduction: !Equals [!Ref Environment, production]
+
+Resources:
+  ELBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow traffic to the ALB
+      VpcId: !Ref VPC
+      Tags:
+        - Key: app
+          Value: !Ref Appname
+        - Key: type
+          Value: network
+        - Key: env
+          Value: !Ref Environment
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !If [isProduction, 443, 80]
+          ToPort: !If [isProduction, 443, 80]
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+
+  ElasticLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      IpAddressType: ipv4
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref ELBSecurityGroup
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      Type: application
+      Tags:
+        - Key: app
+          Value: !Ref Appname
+        - Key: type
+          Value: network
+        - Key: env
+          Value: !Ref Environment
+
+
+  # ALARMS =============================
+
+  HTTPCodeELB5XXTooHighAlarm:
+    Condition: isProduction
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmDescription: 'Application load balancer returns 5XX HTTP status codes'
+      Namespace: 'AWS/ApplicationELB'
+      MetricName: HTTPCode_ELB_5XX_Count
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: 0
+      AlarmActions:
+        - !Ref AlarmsTopicArn
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt ElasticLoadBalancer.LoadBalancerFullName
+      TreatMissingData: notBreaching
+
+  HTTPCodeTarget5XXTooHighAlarm:
+    Condition: isProduction
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmDescription: 'Application load balancer receives 5XX HTTP status codes from targets'
+      Namespace: 'AWS/ApplicationELB'
+      MetricName: HTTPCode_Target_5XX_Count
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: 0
+      AlarmActions:
+        - !Ref AlarmsTopicArn
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt ElasticLoadBalancer.LoadBalancerFullName
+      TreatMissingData: notBreaching
+
+  RejectedConnectionCountTooHighAlarm:
+    Condition: isProduction
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmDescription: 'Application load balancer rejected connections because the load balancer had reached its maximum number of connections'
+      Namespace: 'AWS/ApplicationELB'
+      MetricName: RejectedConnectionCount
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: 0
+      AlarmActions:
+        - !Ref AlarmsTopicArn
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt ElasticLoadBalancer.LoadBalancerFullName
+      TreatMissingData: notBreaching
+
+  TargetConnectionErrorCountTooHighAlarm:
+    Condition: isProduction
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmDescription: 'Application load balancer could not connect to targets'
+      Namespace: 'AWS/ApplicationELB'
+      MetricName: TargetConnectionErrorCount
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: 0
+      AlarmActions:
+        - !Ref AlarmsTopicArn
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt ElasticLoadBalancer.LoadBalancerFullName
+      TreatMissingData: notBreaching
+
+  # PARAMETERS ==========================
+
+  ElasticLoadBalancerArn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${Appname}-${Environment}-elasticLoadBalancer-arn
+      Tags:
+        app: !Ref Appname
+        env: !Ref Environment
+        type: parameter
+        description: Application load balancer arn
+      Type: String
+      Value: !Ref ElasticLoadBalancer
+
+  ELBSecurityGroupId:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${Appname}-${Environment}-securityGroup-id
+      Tags:
+        app: !Ref Appname
+        env: !Ref Environment
+        type: parameter
+        description: ELB Security Group Id
+      Type: String
+      Value: !GetAtt ELBSecurityGroup.GroupId
+
+
+Outputs:
+  ElasticLoadBalancerArn:
+    Description: Application load balancer arn
+    Value: !GetAtt ElasticLoadBalancerArn.Value
+
+  ECSAutoScalingGroupName:
+    Description: ELB Security Group Id
+    Value: !GetAtt ELBSecurityGroupId.Value

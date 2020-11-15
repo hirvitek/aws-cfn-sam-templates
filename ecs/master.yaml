@@ -42,31 +42,23 @@ Metadata:
 
 
 Resources:
-  TemplatesBucket:
-    Type: AWS::S3::Bucket
+  AlamrsTopic:
+    Type: AWS::SNS::Topic
+
+  AlamrsTopicArn:
+    Type: AWS::SSM::Parameter
     Properties:
-      BucketName: !Sub ${Appname}-${Environment}-templates-bucket
-
-  WebServicePipeline:
-    Type: AWS::CloudFormation::Stack
-    Properties:
-      TemplateURL: !Sub https://s3.amazonaws.com/${TemplatesBucket}/templates/services-pipeline.yaml
-      Parameters:
-        GitHubUser: !Ref GitHubUser
-        GitHubToken: !Ref GitHubToken
-        GitHubRepo: !Ref GitHubRepo
-        GitHubBranch: !Ref GitHubBranch
-        TemplateBucket: !Ref TemplateBucket
-        Subnet1: !GetAtt VPC.Outputs.Subnet1
-        Subnet2: !GetAtt VPC.Outputs.Subnet2
-        VpcId: !GetAtt VPC.Outputs.VpcId
-        VpcCIDR: 10.215.0.0/16
+      Name: !Sub ${Appname}-${Environment}-alarmsTopic-arn
+      Tags:
+        app: !Ref Appname
+        env: !Ref Environment
+        type: parameter
+        description: Alarms topic Arn
+      Type: String
+      Value: !Ref AlamrsTopic
 
 
-
- # PARAMETERS =============================================
-
-  # Token should be in form '{"token":"123abc"}'
+    # Token should be in form '{"token":"123abc"}'
   GithhubSecrets:
     Type: 'AWS::SecretsManager::Secret'
     Properties:
