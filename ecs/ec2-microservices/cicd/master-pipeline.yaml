@@ -1,0 +1,57 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >
+  Master stack for all the services pipelines
+
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues:
+      - prod
+      - stag
+      - dev
+    ConstraintDescription: Environment is not valid
+
+  Appname:
+    Type: String
+
+  TemplateBucket:
+    Type: String
+    Description: >
+      S3 Bucket used for nested templates
+
+  ECSClusterArn:
+    Type: AWS::SSM::Parameter::Value<String>
+
+  VPC:
+    Type: AWS::SSM::Parameter::Value<String>
+
+  GitHubOwner:
+    Type: String
+
+Mappings:
+  Variables:
+    prod:
+      Branch: master
+    dev:
+      Branch: dev
+
+Resources:
+  TemplatesBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${Appname}-${Environment}-templates-bucket
+
+  WebServicePipeline:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.amazonaws.com/${TemplatesBucket}/templates/services-pipeline.yaml
+      Parameters:
+        GitHubOwner: MatteoInfi
+        GitHubRepo: web-service-test
+        GitHubRepoUrl: https://github.com/MatteoInfi/web-service-test.git
+        GitHubBranch: !FindInMap [Variables, !Ref Environment, Branch]
+        VPC: !Ref VPC
+        ECSClusterArn: !Ref ECSClusterArn
+        ServiceName: Web

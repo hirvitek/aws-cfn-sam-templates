@@ -3,8 +3,8 @@
 # Simple deployment script with SAM
 # Specify an argument to the script to override the environment
 #  dev:   ./deploy.sh
-#  prod:  ./deploy.sh production
-#  stag:  ./deploy.sh staging
+#  prod:  ./deploy.sh prod
+#  stag:  ./deploy.sh stag
 export ENV=${1:-dev}
 export APPNAME=""
 PROJECT=${APPNAME}-${ENV}

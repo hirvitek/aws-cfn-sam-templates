@@ -1,6 +1,7 @@
-Description: >
-  This template illustrates reference architecture for Blue/Green Deployment on ECS. For further reference, please review BluegreenRepo ==> https://github.com/awslabs/ecs-blue-green-deployment
+AWSTemplateFormatVersion: "2010-09-09"
 
+Description: >
+  Master template for global services and configurations across all the stacks
 
 Parameters:
   Environment:
@@ -13,12 +14,6 @@ Parameters:
 
   Appname:
     Type: String
-
-  TemplateBucket:
-    Type: String
-    Description: >
-      S3 Bucket used for nested templates
-
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -58,9 +53,39 @@ Resources:
       Value: !Ref AlamrsTopic
 
 
-    # Token should be in form '{"token":"123abc"}'
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: !If [isProduction, 90, 7]
+      LogGroupName: ${Appname}-${Environment}-logGroup
+
+  LogGroupName:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${Appname}-${Environment}-logGroup-name
+      Tags:
+        app: !Ref Appname
+        env: !Ref Environment
+        type: parameter
+        description: Services log group name
+      Type: String
+      Value: !Ref LogGroup
+
+  Appname:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: Appname
+      Tags:
+        app: !Ref Appname
+        env: !Ref Environment
+        type: parameter
+        description: Services log group name
+      Type: String
+      Value: !Ref Appname
+
+  # Token should be in form '{"token":"123abc"}'
   GithhubSecrets:
-    Type: 'AWS::SecretsManager::Secret'
+    Type: AWS::SecretsManager::Secret
     Properties:
       Name: !Sub ${Appname}-${Environment}-github
       Description: Contain mainly a GithubToken for CodePipeline
@@ -72,3 +97,11 @@ Resources:
         - Key: type
           Value: security
 
+Outputs:
+  AlarmsTopicArn:
+    Description: Topic for all the alarms
+    Value: !GetAtt AlamrsTopicArn.Value
+
+  LogGroupName:
+    Description: Global log group name
+    Value: !GetAtt LogGroupName.Value

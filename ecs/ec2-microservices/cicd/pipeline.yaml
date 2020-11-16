@@ -10,7 +10,8 @@ Parameters:
     ConstraintDescription: Environment is not valid
 
   Appname:
-    Type: String
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: Appname
 
   ServiceName:
     Type: String
@@ -18,13 +19,7 @@ Parameters:
   ECSClusterArn:
     Type: AWS::SSM::Parameter::Value<String>
 
-  LoadBalancerArn:
-    Type: AWS::SSM::Parameter::Value<String>
-
   VPC:
-    Type: AWS::SSM::Parameter::Value<String>
-
-  AlarmsTopicArn:
     Type: AWS::SSM::Parameter::Value<String>
 
   GitHubOwner:
@@ -79,7 +74,7 @@ Resources:
   Pipeline:
     Type: AWS::CodePipeline::Pipeline
     Properties:
-      Name: !Sub ${AWS::StackName}-pipeline
+      Name: !Sub ${AWS::StackName}
       RoleArn: !GetAtt CodePipelineRole.Arn
       ArtifactStore:
         Location: !Ref DeploymentArtifactsBucket
@@ -137,15 +132,19 @@ Resources:
                     "Appname": "${Appname}",
                     "ServiceName": "${ServiceName}",
                     "ECSClusterArn": "${ECSClusterArn}",
-                    "LoadBalancerArn": "${LoadBalancerArn}",
                     "VPC": "${VPC}",
-                    "AlarmsTopicArn": "${AlarmsTopicArn}",
+                    "PublicSubnet1" :"${Appname}-${Environment}-publicSubnet1-id",
+                    "PublicSubnet2" :"${Appname}-${Environment}-publicSubnet2-id",
+                    "PrivateSubnet1" :"${Appname}-${Environment}-privateSubnet1-id",
+                    "PrivateSubnet2" :"${Appname}-${Environment}-privateSubnet2-id",
+                    "AlarmsTopicArn": "${Appname}-${Environment}-alarmsTopic-arn",
+                    "LogGroupName": "${Appname}-${Environment}-logGroup-name"
                     "ImageURI" : { "Fn::GetParam" : ["build-output-artifacts", "build.json", "Image"] },
                     "Environment":  "${Environment}"
                   }
                 RoleArn: !GetAtt CloudformationExecutionRole.Arn
-                StackName: !Sub ${AWS::StackName}-service
-                TemplatePath: source-output-artifacts::Cloudformation/service.yml
+                StackName: !Sub ${Appname}-${ServiceName}-${Environment}-service
+                TemplatePath: source-output-artifacts::Cloudformation/service.yaml
               RunOrder: 1
 
 
@@ -257,7 +256,7 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       RoleName:
-        Fn::Sub: ${AWS::StackName}-image-pipeline-role
+        Fn::Sub: ${AWS::StackName}-role
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -302,7 +301,7 @@ Resources:
   CloudformationExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub ${AWS::StackName}-image-pipeline-role
+      RoleName: !Sub ${AWS::StackName}-pipeline-role
       AssumeRolePolicyDocument:
         Statement:
           - Effect: Allow

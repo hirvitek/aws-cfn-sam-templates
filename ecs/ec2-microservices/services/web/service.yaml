@@ -1,11 +1,10 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Application load balancer for ECS cluster
 
 Parameters:
   Environment:
     Type: String
     AllowedValues:
-      - prod
+      - production
       - stag
       - dev
     ConstraintDescription: Environment is not valid
@@ -16,6 +15,18 @@ Parameters:
   ServiceName:
     Type: String
 
+  ImageURI:
+    Type: String
+
+  AlarmsTopicArn:
+    Type: AWS::SSM::Parameter::Value<String>
+
+  LogGroupName:
+    Type: AWS::SSM::Parameter::Value<String>
+
+  ECSClusterArn:
+    Type: AWS::SSM::Parameter::Value<String>
+
   VPC:
     Type: AWS::SSM::Parameter::Value<String>
 
@@ -25,13 +36,38 @@ Parameters:
   PublicSubnet2:
     Type: AWS::SSM::Parameter::Value<String>
 
-  AlarmsTopicArn:
+  PrivateSubnet1:
     Type: AWS::SSM::Parameter::Value<String>
+
+  PrivateSubnet2:
+    Type: AWS::SSM::Parameter::Value<String>
+
+  ContainerPort:
+    Type: String
+    Default: 8080
+
+  CertificateArn:
+    Type: String
+    Default: ""
 
 Conditions:
   isProduction: !Equals [!Ref Environment, production]
 
+Mappings:
+  Variables:
+    production:
+      DesiredCount: 2
+      MaximumPercent: 200
+      MinimumHealthyPercent: 100
+      Memory: 512
+    dev:
+      DesiredCount: 2
+      MaximumPercent: 200
+      MinimumHealthyPercent: 100
+      Memory: 256
+
 Resources:
+  # APPLICATION LOAD BALANCER =========================
   ELBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -74,8 +110,41 @@ Resources:
         - Key: env
           Value: !Ref Environment
 
+  ServiceTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      TargetType: instance
+      VpcId: !Ref VPC
+      HealthCheckEnabled: true
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: /
+      HealthCheckPort: !Ref ContainerPort
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 3
+      UnhealthyThresholdCount: 5
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          # To speed up the deployment in development we keep the delay at 0
+          Value: !If [isProduction, '300', '0']
 
-  # ALARMS =============================
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ServiceTargetGroup
+      LoadBalancerArn: !Ref ElasticLoadBalancer
+      Certificates:
+        - CertificateArn:
+            Fn::If:
+              - isProduction
+              - Ref: CertificateArn
+              - Ref: AWS::NoValue
+      Port: !If [isProduction, 443, 80]
+      Protocol: !If [isProduction, HTTPS, HTTP]
 
   HTTPCodeELB5XXTooHighAlarm:
     Condition: isProduction
@@ -153,7 +222,97 @@ Resources:
           Value: !GetAtt ElasticLoadBalancer.LoadBalancerFullName
       TreatMissingData: notBreaching
 
-  # PARAMETERS ==========================
+
+  # SERVICE ======================================
+
+  ECSService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub ${ServiceName}-${Environment}
+      Cluster: !Ref ECSClusterArn
+      TaskDefinition: !Ref TaskDefinition
+      PlacementStrategies:
+        - Field: memory
+          Value: binpack
+      DeploymentConfiguration:
+        MaximumPercent: !FindInMap [Variables, !Ref Environment, MaximumPercent]
+        MinimumHealthyPercent: !FindInMap [Variables, !Ref Environment, MinimumHealthyPercent]
+      DesiredCount: !FindInMap [Variables, !Ref Environment, DesiredCount]
+      LaunchType: EC2
+      LoadBalancers:
+        - ContainerName: !Sub ${ServiceName}-${Environment}
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref ServiceTargetGroup
+      Tags:
+        - Key: app
+          Value: !Ref Appname
+        - Key: service
+          Value: !Sub ${ServiceName}-${Environment}
+        - Key: type
+          Value: compute
+        - Key: env
+          Value: !Ref Environment
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Memory: !FindInMap [Variables, !Ref Environment, Memory]
+      NetworkMode: bridge
+      RequiresCompatibilities:
+        - 'EC2'
+      ContainerDefinitions:
+        - Name: !Sub ${ServiceName}-${Environment}
+          Image: !Ref ImageURI
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              HostPort: 0
+              Protocol: tcp
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              'awslogs-region': !Ref 'AWS::Region'
+              'awslogs-group': !Ref LogGroupName
+              'awslogs-stream-prefix': !Sub ${ServiceName}-${Enviornment}
+          Environment:
+            - Name: PORT
+              Value: !Ref ContainerPort
+              # Substitute with your programming language
+            - Name: NODE_ENV
+              Value: !Ref Environment
+
+#  CPUUtilizationTooHighAlarm:
+#    Condition: isProduction
+#    Type: AWS::CloudWatch::Alarm
+#    Properties:
+#      AlarmDescription: 'Average CPU utilization over last 10 minutes higher than 80%'
+#      Namespace: 'AWS/ECS'
+#      Dimensions:
+#        - Name: ClusterName
+#          Value: !Ref ECSClusterArn
+#        - Name: ServiceName
+#          Value: !GetAtt ECSService.Name
+#      MetricName: CPUUtilization
+#      ComparisonOperator: GreaterThanThreshold
+#      Statistic: Average
+#      Period: 300
+#      EvaluationPeriods: 1
+#      Threshold: 80
+#      AlarmActions:
+#        - !Ref AlarmsTopicArn
+
+  # PARAMETERS =======================
+
+  TargetGroupArn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${Appname}-${ServiceName}-${Environment}-targetGroup-arn
+      Tags:
+        app: !Ref Appname
+        env: !Ref Environment
+        type: parameter
+        description: Target group Arn
+      Type: String
+      Value: !Ref ServiceTargetGroup
 
   ElasticLoadBalancerArn:
     Type: AWS::SSM::Parameter
@@ -178,13 +337,3 @@ Resources:
         description: ELB Security Group Id
       Type: String
       Value: !GetAtt ELBSecurityGroup.GroupId
-
-
-Outputs:
-  ElasticLoadBalancerArn:
-    Description: Application load balancer arn
-    Value: !GetAtt ElasticLoadBalancerArn.Value
-
-  ECSAutoScalingGroupName:
-    Description: ELB Security Group Id
-    Value: !GetAtt ELBSecurityGroupId.Value
